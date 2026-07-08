@@ -189,6 +189,45 @@ func TestToCoreRequest_FunctionCallOutputImage(t *testing.T) {
 	}
 }
 
+func TestToCoreRequest_ConsumedFunctionCallOutputImageBecomesText(t *testing.T) {
+	adapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
+
+	req := &openai.ResponsesRequest{
+		Model: "gpt-4o",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_view","name":"view_image","arguments":"{\"path\":\"dog.jpg\"}"},
+			{"type":"function_call_output","call_id":"call_view","output":[
+				{"type":"input_image","image_url":"data:image/jpeg;base64,abc123","detail":"original"}
+			]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The image shows a dog."}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Now edit a file."}]}
+		]`),
+	}
+
+	result, err := adapter.ToCoreRequest(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "image" {
+				t.Fatalf("consumed image should not remain in later text turn: %+v", result.Messages)
+			}
+			if block.Type == "tool_result" {
+				for _, child := range block.ToolResultContent {
+					if child.Type == "image" {
+						t.Fatalf("consumed tool image should be text, got image child: %+v", block.ToolResultContent)
+					}
+				}
+			}
+		}
+	}
+	toolResult := result.Messages[1].Content[0]
+	if got := toolResult.ToolResultContent[0].Text; !strings.Contains(got, "image content omitted") {
+		t.Fatalf("tool result text = %q, want omitted image placeholder", got)
+	}
+}
+
 func TestFromCoreResponse_Basic(t *testing.T) {
 	adapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
 

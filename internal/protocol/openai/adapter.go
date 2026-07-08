@@ -1165,7 +1165,7 @@ func convertInput(raw json.RawMessage, model string) ([]format.CoreMessage, []fo
 	var pendingReasoning []format.CoreContentBlock
 	var pendingFCBlocks []format.CoreContentBlock // batch consecutive function_calls
 
-	for _, item := range items {
+	for idx, item := range items {
 		if isToolCallOutputType(item.Type) {
 			// Keep any pending reasoning within the same assistant tool-call turn.
 			// Emitting a standalone assistant reasoning message here would break
@@ -1200,7 +1200,7 @@ func convertInput(raw json.RawMessage, model string) ([]format.CoreMessage, []fo
 				Content: []format.CoreContentBlock{{
 					Type:              "tool_result",
 					ToolUseID:         item.CallID,
-					ToolResultContent: outputToContentBlocks(item.Output),
+					ToolResultContent: outputToContentBlocks(item.Output, toolOutputConsumed(items, idx)),
 				}},
 			})
 			continue
@@ -2016,16 +2016,47 @@ func customToolDescription(tool Tool, grammar string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func outputToContentBlocks(raw json.RawMessage) []format.CoreContentBlock {
+func outputToContentBlocks(raw json.RawMessage, consumed bool) []format.CoreContentBlock {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
 	blocks := contentBlocksFromRaw(raw)
 	if len(blocks) > 0 {
+		if consumed {
+			blocks = omitImageBlocks(blocks)
+		}
 		return blocks
 	}
 	if text := outputToString(raw); text != "" {
 		return []format.CoreContentBlock{{Type: "text", Text: text}}
 	}
 	return nil
+}
+
+func toolOutputConsumed(items []inputItem, idx int) bool {
+	for i := idx + 1; i < len(items); i++ {
+		item := items[i]
+		if item.Role == "assistant" || item.Type == "message" && item.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+func omitImageBlocks(blocks []format.CoreContentBlock) []format.CoreContentBlock {
+	out := make([]format.CoreContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "image" {
+			out = append(out, format.CoreContentBlock{
+				Type: "text",
+				Text: "image content omitted because you do not support image input",
+			})
+			continue
+		}
+		if block.Type == "tool_result" {
+			block.ToolResultContent = omitImageBlocks(block.ToolResultContent)
+		}
+		out = append(out, block)
+	}
+	return out
 }
