@@ -808,12 +808,8 @@ func (a *AnthropicProviderAdapter) toContentBlock(b format.CoreContentBlock) Con
 
 	case "image":
 		return ContentBlock{
-			Type: "image",
-			Source: &ImageSource{
-				Type:      "base64",
-				Data:      b.ImageData,
-				MediaType: b.MediaType,
-			},
+			Type:   "image",
+			Source: imageSourceFromCore(b.ImageData, b.MediaType),
 		}
 
 	case "tool_use":
@@ -853,6 +849,44 @@ func (a *AnthropicProviderAdapter) toContentBlock(b format.CoreContentBlock) Con
 			Text: b.Text,
 		}
 	}
+}
+
+func imageSourceFromCore(imageData, mediaType string) *ImageSource {
+	data := strings.TrimSpace(imageData)
+	mediaType = strings.TrimSpace(mediaType)
+	if dataURLMediaType, payload, ok := splitBase64DataURL(data); ok {
+		data = payload
+		if dataURLMediaType != "" {
+			mediaType = dataURLMediaType
+		}
+	}
+	return &ImageSource{
+		Type:      "base64",
+		Data:      data,
+		MediaType: mediaType,
+	}
+}
+
+func splitBase64DataURL(value string) (mediaType, data string, ok bool) {
+	if len(value) < len("data:") || !strings.EqualFold(value[:len("data:")], "data:") {
+		return "", "", false
+	}
+	header, data, ok := strings.Cut(value, ",")
+	if !ok {
+		return "", "", false
+	}
+	metadata := strings.Split(header[len("data:"):], ";")
+	isBase64 := false
+	for _, parameter := range metadata[1:] {
+		if strings.EqualFold(strings.TrimSpace(parameter), "base64") {
+			isBase64 = true
+			break
+		}
+	}
+	if !isBase64 {
+		return "", "", false
+	}
+	return strings.TrimSpace(metadata[0]), data, true
 }
 
 // toAnthropicToolChoice converts CoreToolChoice to anthropic ToolChoice.

@@ -7,6 +7,7 @@ import (
 
 	"moonbridge/internal/format"
 	"moonbridge/internal/protocol/anthropic"
+	"moonbridge/internal/protocol/openai"
 )
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,82 @@ func TestFromCoreRequest_ImageMessage(t *testing.T) {
 	}
 	if blocks[1].Source.Type != "base64" {
 		t.Errorf("source type = %q", blocks[1].Source.Type)
+	}
+}
+
+func TestFromCoreRequest_ImageDataURLUsesHeaderMediaType(t *testing.T) {
+	coreReq := &format.CoreRequest{
+		Model: "claude-sonnet-4",
+		Messages: []format.CoreMessage{
+			{
+				Role: "user",
+				Content: []format.CoreContentBlock{
+					{
+						Type:      "image",
+						ImageData: "data:image/jpeg;charset=utf-8;base64,/9j/4AAQ",
+						MediaType: "image/png",
+					},
+				},
+			},
+		},
+	}
+
+	result, err := newTestAdapter().FromCoreRequest(context.Background(), coreReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := result.(*anthropic.MessageRequest).Messages[0].Content[0].Source
+	if source == nil {
+		t.Fatal("image source is nil")
+	}
+	if got, want := source.Data, "/9j/4AAQ"; got != want {
+		t.Fatalf("image source data = %q, want %q", got, want)
+	}
+	if got, want := source.MediaType, "image/jpeg"; got != want {
+		t.Fatalf("image media type = %q, want %q", got, want)
+	}
+}
+
+func TestFromOpenAIViewImageRequest_StripsDataURLPrefix(t *testing.T) {
+	openAIAdapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
+	coreReq, err := openAIAdapter.ToCoreRequest(context.Background(), &openai.ResponsesRequest{
+		Model: "k3",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_view","name":"view_image","arguments":"{\"path\":\"target-login.png\"}"},
+			{"type":"function_call_output","call_id":"call_view","output":[
+				{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}
+			]}
+		]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := newTestAdapter().FromCoreRequest(context.Background(), coreReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgReq := result.(*anthropic.MessageRequest)
+	if len(msgReq.Messages) == 0 {
+		t.Fatal("messages are empty")
+	}
+	lastMessage := msgReq.Messages[len(msgReq.Messages)-1]
+	if len(lastMessage.Content) != 1 || lastMessage.Content[0].Type != "tool_result" {
+		t.Fatalf("last message = %+v, want one tool result", lastMessage)
+	}
+	toolResult := lastMessage.Content[0]
+	children, ok := toolResult.Content.([]anthropic.ContentBlock)
+	if !ok || len(children) != 1 || children[0].Source == nil {
+		t.Fatalf("tool result content = %#v, want one Anthropic image block", toolResult.Content)
+	}
+	if got, want := children[0].Source.Data, "iVBORw0KGgo="; got != want {
+		t.Fatalf("image source data = %q, want %q", got, want)
+	}
+	if got, want := children[0].Source.MediaType, "image/png"; got != want {
+		t.Fatalf("image media type = %q, want %q", got, want)
+	}
+	if got, want := children[0].Source.Type, "base64"; got != want {
+		t.Fatalf("image source type = %q, want %q", got, want)
 	}
 }
 
